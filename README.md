@@ -6,6 +6,17 @@
 
 <br clear="left">
 
+<p>
+<img src="screenshots/1-home.png" width="135" alt="מסך הבית">
+<img src="screenshots/2-chat.png" width="135" alt="צ'אט אישי">
+<img src="screenshots/3-space.png" width="135" alt="מרחב">
+<img src="screenshots/4-voice.png" width="135" alt="הודעות קוליות">
+<img src="screenshots/5-menu.png" width="135" alt="תפריט הודעה ועיצוב טקסט">
+<img src="screenshots/6-dark-accounts.png" width="135" alt="מצב כהה והחלפת חשבון">
+</p>
+
+<sub>צילומי מסך להמחשה, עם שמות ותוכן בדויים.</sub>
+
 ## הורדה
 
 - **האפליקציה לנגן:** [BTChat.apk](https://github.com/Xnet2/btchat/releases/latest/download/BTChat.apk)
