@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:colorAccent">#FF0B57D0</item>
+        <item name="android:colorPrimary">#FF0B57D0</item>
+        <item name="android:colorControlActivated">#FF0B57D0</item>
+        <item name="android:textCursorDrawable">@null</item>
+    </style>
+</resources>

@@ -1,0 +1,9 @@
+*.apk
+*.exe
+*.ico
+*.idsig
+*.zip
+*.png
+!android/icon.png
+!logo-512.png
+!screenshots/*.png
