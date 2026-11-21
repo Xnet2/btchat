@@ -494,6 +494,8 @@ namespace BTChat
             Directory.CreateDirectory(ProfileDir);
             string args = "--user-data-dir=\"" + ProfileDir + "\" --remote-debugging-port=" + Port +
                 " --no-first-run --no-default-browser-check --disable-background-timer-throttling" +
+                // סנכרון Chrome ותוספים מסונכרנים גרמו לפרופיל לא לטעון/לשמור את ההתחברות אחרי הפעלה מחדש.
+                " --disable-sync --disable-extensions" +
                 " --disable-renderer-backgrounding --disable-backgrounding-occluded-windows" +
                 " --disable-features=CalculateNativeWinOcclusion --window-size=1000,760" +
                 (hidden ? " --window-position=-32000,-32000" : "") + " https://chat.google.com/";
