@@ -367,6 +367,8 @@ namespace BTChat
         readonly object sendLock = new object();
         int nextId;
         public volatile bool Alive;
+        /// <summary>אירועים שהדפדפן שולח מעצמו (בלי מספר בקשה), למשל Fetch.requestPaused.</summary>
+        public Action<string, Dictionary<string, object>> OnEvent;
 
         public static Cdp Connect(string url)
         {
@@ -395,7 +397,18 @@ namespace BTChat
                     ms.SetLength(0);
                     Dictionary<string, object> m;
                     try { m = Json.Obj(Json.Parse(text)); } catch { continue; }
-                    if (m == null || !m.ContainsKey("id")) continue;
+                    if (m == null) continue;
+                    if (!m.ContainsKey("id"))
+                    {
+                        var h = OnEvent;
+                        if (h != null && m.ContainsKey("method"))
+                        {
+                            string meth = Json.Str(m, "method");
+                            var prm = Json.Obj(m.ContainsKey("params") ? m["params"] : null) ?? new Dictionary<string, object>();
+                            ThreadPool.QueueUserWorkItem(_ => { try { h(meth, prm); } catch { } });
+                        }
+                        continue;
+                    }
                     int id = (int)Json.Long(m, "id");
                     Pending p;
                     lock (pend) { if (pend.TryGetValue(id, out p)) pend.Remove(id); }
@@ -496,8 +509,10 @@ namespace BTChat
                 " --no-first-run --no-default-browser-check --disable-background-timer-throttling" +
                 // סנכרון Chrome ותוספים מסונכרנים גרמו לפרופיל לא לטעון/לשמור את ההתחברות אחרי הפעלה מחדש.
                 " --disable-sync --disable-extensions" +
+                // חיסכון בזיכרון ובאינטרנט: פחות תהליכים נפרדים לכל מסגרת בדף, ובלי עדכוני רקע של Chrome
+                " --disable-site-isolation-trials --disable-background-networking" +
                 " --disable-renderer-backgrounding --disable-backgrounding-occluded-windows" +
-                " --disable-features=CalculateNativeWinOcclusion --window-size=1000,760" +
+                " --disable-features=CalculateNativeWinOcclusion,IsolateOrigins,site-per-process --window-size=1000,760" +
                 (hidden ? " --window-position=-32000,-32000" : "") + " https://chat.google.com/";
             Process.Start(new ProcessStartInfo(exe, args) { UseShellExecute = false });
             return true;
@@ -676,7 +691,7 @@ namespace BTChat
         public string Status = "מתחבר…";
         public string Key = "", Name = "", Email = "", Avatar = "";
         public bool ShownLogin, ShownSlow, Navigated;
-        public DateTime LoadingSince = DateTime.MinValue, LastFullWorld = DateTime.MinValue;
+        public DateTime LoadingSince = DateTime.MinValue, LastFullWorld = DateTime.MinValue, LastBigPoll = DateTime.MinValue;
         public readonly Dictionary<string, long> SortSeen = new Dictionary<string, long>();
         public readonly Dictionary<string, string> RowSent = new Dictionary<string, string>();
 
@@ -1301,7 +1316,7 @@ namespace BTChat
         // עבודה מול גוגל: תור אחד, לפי הסדר
         readonly BlockingCollection<Action> jobs = new BlockingCollection<Action>();
         volatile bool pollQueued;
-        DateTime lastPoll = DateTime.MinValue;
+        DateTime lastPoll = DateTime.MinValue, lastActivity = DateTime.UtcNow;
         readonly HashSet<string> usersSent = new HashSet<string>();
         bool syncPending;
         Dictionary<string, long> phoneKnown = new Dictionary<string, long>();
@@ -1388,7 +1403,9 @@ namespace BTChat
                 try { EnsureGoogle(); }
                 catch (Exception e) { DropAll(); SetG(false, "אין חיבור ל-Chrome (" + e.Message + ")"); }
                 try { if (St.HideChrome && !ChromeShown) Win.Hide(); } catch { }
-                if (GOk && Connected && !pollQueued && (DateTime.UtcNow - lastPoll).TotalSeconds >= 4)
+                // כל 4 שניות כשיש פעילות (הודעה חדשה או פעולה מהנגן בשתי הדקות האחרונות), אחרת כל 8
+                double gap = (DateTime.UtcNow - lastActivity).TotalSeconds < 120 ? 4 : 8;
+                if (GOk && Connected && !pollQueued && (DateTime.UtcNow - lastPoll).TotalSeconds >= gap)
                 {
                     pollQueued = true;
                     jobs.Add(() => { pollQueued = false; Poll(); });
@@ -1428,6 +1445,34 @@ namespace BTChat
 
         static string ChatUrl(int index) { return index > 0 ? "https://chat.google.com/u/" + index + "/" : "https://chat.google.com/"; }
 
+        // חלקים של דף גוגל צ'אט שהתוכנה לא צריכה: Meet (שיחות וידאו), כרטיסי אנשי קשר, סרגל החשבונות
+        // של גוגל, משוב וסטטיסטיקות. חוסמים אותם בכרטיסייה כדי לחסוך זיכרון ואינטרנט.
+        static readonly string[] BlockedUrls = {
+            "*://meet.google.com/*", "*://contacts.google.com/*", "*://ogs.google.com/*",
+            "*://play.google.com/log*", "*://feedback-pa.clients6.google.com/*",
+        };
+
+        void BlockExtras(Account a)
+        {
+            try
+            {
+                // Fetch עוצר כל בקשה שמתאימה לרשימה (גם של מסגרות בתוך הדף), ואנחנו מכשילים אותה מיד
+                var cdp = a.Cdp;
+                cdp.OnEvent = (meth, prm) =>
+                {
+                    if (meth != "Fetch.requestPaused") return;
+                    try { cdp.Send("Fetch.failRequest", Json.New("requestId", Json.Str(prm, "requestId"), "errorReason", "BlockedByClient"), 5000); } catch { }
+                };
+                var pats = new List<object>();
+                foreach (var u in BlockedUrls) pats.Add(Json.New("urlPattern", u, "requestStage", "Request"));
+                cdp.Send("Fetch.enable", Json.New("patterns", pats), 5000);
+                // אם הדף כבר נטען עם החלקים האלה, טוענים אותו מחדש פעם אחת כדי שייצאו מהזיכרון
+                var had = a.Cdp.Eval("!!document.querySelector('iframe[src*=\"meet.google.com\"],iframe[src*=\"ogs.google.com\"],iframe[src*=\"contacts.google.com\"]')", 5000);
+                if (had is bool && (bool)had) a.Cdp.Send("Page.reload", null, 5000);
+            }
+            catch (Exception e) { Log("חסימת החלקים המיותרים נכשלה: " + e.Message); }
+        }
+
         void EnsureAccount(Account a)
         {
             if (a.Cdp != null && !a.Cdp.Alive) a.Drop();
@@ -1438,6 +1483,7 @@ namespace BTChat
                 a.TargetId = tid;
                 a.Cdp = Cdp.Connect(ws);
                 a.Gc = new GChat(a.Cdp, a.Index);
+                BlockExtras(a);
             }
             if (a.Ok) return;
             string url;
@@ -1705,7 +1751,7 @@ namespace BTChat
                     if (missed && Connected) try { SendRecent(a, r.Gid, 12, true); } catch (Exception e) { GoogleFailed(a, e); }
                 }
                 lock (a.SortSeen) { a.SortSeen.Clear(); foreach (var r in kv.Value) a.SortSeen[r.Gid] = r.Sort; }
-                a.LastFullWorld = DateTime.UtcNow;
+                a.LastFullWorld = a.LastBigPoll = DateTime.UtcNow;
             }
             lastPoll = DateTime.UtcNow;
         }
@@ -1725,7 +1771,11 @@ namespace BTChat
 
         void PollAccount(Account a)
         {
-            var rows = a.Gc.World(40);
+            // הודעה חדשה תמיד מקפיצה את הצ'אט שלה לראש הרשימה, אז בבדיקה הרגילה מספיקים 10 הראשונים.
+            // פעם בשתי דקות רשימה ארוכה, כדי לתפוס שינויים בצ'אטים שלמטה (למשל סימון כנקרא ממכשיר אחר).
+            bool big = (DateTime.UtcNow - a.LastBigPoll).TotalSeconds >= 120;
+            var rows = a.Gc.World(big ? 40 : 10);
+            if (big) a.LastBigPoll = DateTime.UtcNow;
             var changed = new List<ChatRow>();
             var upd = new List<object>();
             a.Gc.ResolveUsers(AllUsers(a, rows));
@@ -1743,6 +1793,7 @@ namespace BTChat
                 lock (a.SortSeen) { has = a.SortSeen.TryGetValue(r.Gid, out seen); a.SortSeen[r.Gid] = r.Sort; }
                 if (has ? r.Sort > seen : (DateTime.UtcNow - a.LastFullWorld).TotalSeconds > 10) changed.Add(r);
             }
+            if (changed.Count > 0) lastActivity = DateTime.UtcNow;
             if (upd.Count > 0) SendLine(Json.Ser(Json.New("t", "chats", "items", upd)));
             foreach (var r in changed) if (Connected) SendRecent(a, r.Gid, 6, true);
         }
@@ -1847,6 +1898,7 @@ namespace BTChat
             string t = Json.Str(d, "t");
             if (t == "ping") { SendLine("{\"t\":\"pong\"}"); return; }
             if (t == "pong") return;
+            lastActivity = DateTime.UtcNow;   // פעולה מהנגן: בודקים מהר בדקות הקרובות
             if (t == "sync")
             {
                 var known = new Dictionary<string, long>();
